@@ -1,105 +1,473 @@
-name:  WINDOES Chrome Remote Desktop
+name: Temporary Chrome Remote Desktop - DEBUG
 
 on:
   workflow_dispatch:
-    inputs:
-      authcode:
-        description: "Chrome Remote Desktop authorization code"
-        required: true
-        type: string
-      pincode:
-        description: "6-digit CRD PIN"
-        required: true
-        type: string
 
 jobs:
   remote-desktop:
     runs-on: windows-latest
+
+    # GitHub-hosted runners are temporary.
+    # Adjust this according to the maximum runtime available to your account.
     timeout-minutes: 360
 
+    env:
+      CRD_AUTH_CODE: ${{ secrets.CRD_AUTH_CODE }}
+      CRD_PIN: ${{ secrets.CRD_PIN }}
+
     steps:
-      - name: Checkout
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+
+      - name: 01 - Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Chrome Remote Desktop
+      # ============================================================
+      # 2. BASIC SYSTEM INFORMATION
+      # ============================================================
+
+      - name: 02 - System diagnostics
         shell: powershell
-        run: |
-          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
-          $installer = "$env:TEMP\chromeremotedesktophost.msi"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
-
-          Start-Process `
-            msiexec.exe `
-            -ArgumentList "/i `"$installer`" /qn /norestart" `
-            -Wait `
-            -NoNewWindow
-
-      - name: Configure Chrome Remote Desktop
-        shell: powershell
-        env:
-          CRD_AUTH_CODE: ${{ github.event.inputs.authcode }}
-          CRD_PIN: ${{ github.event.inputs.pincode }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Find the CRD host executable installed by the MSI
-          $host = Get-ChildItem `
-            "C:\Program Files (x86)\Google\Chrome Remote Desktop" `
-            -Recurse `
-            -Filter "remoting_start_host.exe" `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+          Write-Host "=========================================="
+          Write-Host "SYSTEM INFORMATION"
+          Write-Host "=========================================="
 
-          if (-not $host) {
-            $host = Get-ChildItem `
-              "C:\Program Files\Google\Chrome Remote Desktop" `
+          Write-Host "Computer name:"
+          $env:COMPUTERNAME
+
+          Write-Host ""
+          Write-Host "PowerShell:"
+          $PSVersionTable | Format-List
+
+          Write-Host ""
+          Write-Host "Windows:"
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, OSArchitecture |
+            Format-List
+
+          Write-Host ""
+          Write-Host "User:"
+          whoami
+
+          Write-Host ""
+          Write-Host "Working directory:"
+          Get-Location
+
+          Write-Host ""
+          Write-Host "=========================================="
+
+      # ============================================================
+      # 3. VERIFY SECRETS WITHOUT REVEALING THEM
+      # ============================================================
+
+      - name: 03 - Verify CRD credentials exist
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Checking CRD credentials..."
+
+          if ([string]::IsNullOrWhiteSpace($env:CRD_AUTH_CODE)) {
+              throw "CRD_AUTH_CODE secret is missing."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:CRD_PIN)) {
+              throw "CRD_PIN secret is missing."
+          }
+
+          if ($env:CRD_PIN -notmatch '^\d{6}$') {
+              throw "CRD_PIN must contain exactly 6 digits."
+          }
+
+          Write-Host "CRD_AUTH_CODE: PRESENT"
+          Write-Host "CRD_PIN: PRESENT"
+          Write-Host "CRD_PIN format: VALID"
+
+          # Deliberately do NOT print either secret.
+
+      # ============================================================
+      # 4. DOWNLOAD CRD MSI
+      # ============================================================
+
+      - name: 04 - Download Chrome Remote Desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+          $installer = "$env:TEMP\chromeremotedesktophost.msi"
+
+          Write-Host "=========================================="
+          Write-Host "DOWNLOADING CRD"
+          Write-Host "=========================================="
+
+          Write-Host "URL:"
+          Write-Host $url
+
+          Write-Host ""
+          Write-Host "Destination:"
+          Write-Host $installer
+
+          Write-Host ""
+          Write-Host "Starting download..."
+
+          $start = Get-Date
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer `
+            -UseBasicParsing
+
+          $elapsed = (Get-Date) - $start
+
+          Write-Host ""
+          Write-Host "Download completed."
+          Write-Host "Time: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
+
+          if (-not (Test-Path $installer)) {
+              throw "CRD installer was not downloaded."
+          }
+
+          $file = Get-Item $installer
+
+          Write-Host ""
+          Write-Host "Installer information:"
+          Write-Host "Path: $($file.FullName)"
+          Write-Host "Size: $($file.Length) bytes"
+
+          if ($file.Length -lt 100000) {
+              throw "Downloaded MSI appears suspiciously small."
+          }
+
+          Write-Host ""
+          Write-Host "Download verification: PASSED"
+
+      # ============================================================
+      # 5. INSTALL CRD WITH MSI LOGGING
+      # ============================================================
+
+      - name: 05 - Install Chrome Remote Desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $installer = "$env:TEMP\chromeremotedesktophost.msi"
+          $log = "$env:TEMP\crd-install.log"
+
+          Write-Host "=========================================="
+          Write-Host "INSTALLING CRD"
+          Write-Host "=========================================="
+
+          Write-Host "Installer:"
+          Write-Host $installer
+
+          Write-Host ""
+          Write-Host "MSI log:"
+          Write-Host $log
+
+          Write-Host ""
+          Write-Host "Starting Windows Installer..."
+
+          $arguments = @(
+              "/i"
+              "`"$installer`""
+              "/qn"
+              "/norestart"
+              "/L*v"
+              "`"$log`""
+          )
+
+          Write-Host "msiexec.exe started."
+
+          $start = Get-Date
+
+          $process = Start-Process `
+              -FilePath "msiexec.exe" `
+              -ArgumentList $arguments `
+              -Wait `
+              -PassThru `
+              -NoNewWindow
+
+          $elapsed = (Get-Date) - $start
+
+          Write-Host ""
+          Write-Host "MSI process finished."
+          Write-Host "Elapsed: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
+          Write-Host "Exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "MSI INSTALLATION FAILED"
+              Write-Host "=========================================="
+
+              if (Test-Path $log) {
+                  Write-Host ""
+                  Write-Host "Last 150 lines of MSI log:"
+                  Get-Content $log -Tail 150
+              }
+
+              throw "Chrome Remote Desktop MSI installation failed with exit code $($process.ExitCode)."
+          }
+
+          Write-Host ""
+          Write-Host "MSI installation: SUCCESS"
+
+      # ============================================================
+      # 6. LOCATE CRD FILES
+      # ============================================================
+
+      - name: 06 - Locate Chrome Remote Desktop files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host "SEARCHING FOR CRD"
+          Write-Host "=========================================="
+
+          $paths = @(
+              "${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop",
+              "$env:ProgramFiles\Google\Chrome Remote Desktop",
+              "$env:ProgramFiles(x86)\Google\Chrome Remote Desktop\CurrentVersion",
+              "$env:ProgramFiles\Google\Chrome Remote Desktop\CurrentVersion"
+          )
+
+          foreach ($path in $paths) {
+
+              Write-Host ""
+              Write-Host "Checking:"
+              Write-Host $path
+
+              if (Test-Path $path) {
+                  Write-Host "FOUND"
+
+                  Get-ChildItem `
+                      -Path $path `
+                      -Recurse `
+                      -File `
+                      -ErrorAction SilentlyContinue |
+                    Select-Object FullName, Length |
+                    Format-Table -AutoSize
+              }
+              else {
+                  Write-Host "NOT FOUND"
+              }
+          }
+
+          Write-Host ""
+          Write-Host "Searching specifically for remoting_start_host.exe..."
+
+          $hosts = Get-ChildItem `
+              -Path "${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop",
+                     "$env:ProgramFiles\Google\Chrome Remote Desktop" `
               -Recurse `
               -Filter "remoting_start_host.exe" `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1
+              -ErrorAction SilentlyContinue
+
+          if (-not $hosts) {
+              throw "remoting_start_host.exe was not found."
           }
 
-          if (-not $host) {
-            throw "Chrome Remote Desktop host executable was not found."
+          Write-Host ""
+          Write-Host "CRD host executable(s) found:"
+
+          $hosts | ForEach-Object {
+              Write-Host $_.FullName
           }
 
-          Write-Host "CRD host found: $($host.FullName)"
+          # Store the first executable for later steps.
+          "CRD_HOST_EXE=$($hosts[0].FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
-          # Register this temporary runner as a CRD host.
-          & $host.FullName `
-            --code="$env:CRD_AUTH_CODE" `
-            --redirect-url="https://remotedesktop.google.com/_/oauthredirect" `
-            --name="GitHub-Actions-$env:GITHUB_RUN_ID" `
-            --pin="$env:CRD_PIN"
+      # ============================================================
+      # 7. CHECK CRD SERVICES
+      # ============================================================
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Chrome Remote Desktop registration failed."
-          }
-
-      - name: Verify CRD service
+      - name: 07 - Inspect CRD services
         shell: powershell
         run: |
+          Write-Host "=========================================="
+          Write-Host "CRD SERVICES"
+          Write-Host "=========================================="
+
+          $services = Get-Service |
+              Where-Object {
+                  $_.Name -match "chrom" -or
+                  $_.DisplayName -match "Chrome Remote Desktop"
+              }
+
+          if ($services) {
+              $services |
+                Select-Object Name, Status, StartType, DisplayName |
+                Format-Table -AutoSize
+          }
+          else {
+              Write-Host "No matching CRD service found yet."
+          }
+
+      # ============================================================
+      # 8. REGISTER CRD HOST
+      # ============================================================
+
+      - name: 08 - Register Chrome Remote Desktop host
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host "CRD HOST REGISTRATION"
+          Write-Host "=========================================="
+
+          if (-not (Test-Path $env:CRD_HOST_EXE)) {
+              throw "CRD host executable does not exist."
+          }
+
+          Write-Host "Executable:"
+          Write-Host $env:CRD_HOST_EXE
+
+          Write-Host ""
+          Write-Host "Computer name:"
+          Write-Host $env:COMPUTERNAME
+
+          Write-Host ""
+          Write-Host "Authorization code: PRESENT"
+          Write-Host "PIN: PRESENT"
+          Write-Host ""
+          Write-Host "IMPORTANT: credentials are intentionally not printed."
+
+          Write-Host ""
+          Write-Host "Starting CRD registration..."
+
+          $arguments = @(
+              "--code=$env:CRD_AUTH_CODE"
+              "--redirect-url=https://remotedesktop.google.com/_/oauthredirect"
+              "--name=$env:COMPUTERNAME"
+              "--pin=$env:CRD_PIN"
+          )
+
+          $start = Get-Date
+
+          $process = Start-Process `
+              -FilePath $env:CRD_HOST_EXE `
+              -ArgumentList $arguments `
+              -Wait `
+              -PassThru `
+              -NoNewWindow
+
+          $elapsed = (Get-Date) - $start
+
+          Write-Host ""
+          Write-Host "CRD registration process finished."
+          Write-Host "Elapsed: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
+          Write-Host "Exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+              throw "CRD host registration failed with exit code $($process.ExitCode)."
+          }
+
+          Write-Host ""
+          Write-Host "CRD registration: SUCCESS"
+
+      # ============================================================
+      # 9. VERIFY CRD AFTER REGISTRATION
+      # ============================================================
+
+      - name: 09 - Verify Chrome Remote Desktop
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "POST-REGISTRATION VERIFICATION"
+          Write-Host "=========================================="
+
+          Write-Host ""
+          Write-Host "CRD-related processes:"
+
+          Get-Process |
+            Where-Object {
+              $_.ProcessName -match "chromoting|remoting"
+            } |
+            Select-Object Id, ProcessName, CPU, StartTime |
+            Format-Table -AutoSize
+
+          Write-Host ""
+          Write-Host "CRD-related services:"
+
           Get-Service |
             Where-Object {
-              $_.Name -match "chromoting" -or
+              $_.Name -match "chromoting|remoting" -or
               $_.DisplayName -match "Chrome Remote Desktop"
             } |
-            Format-Table Name, Status, DisplayName
+            Select-Object Name, Status, StartType, DisplayName |
+            Format-Table -AutoSize
 
-      - name: Keep runner alive
+          Write-Host ""
+          Write-Host "Listening network sockets:"
+
+          Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+            Select-Object LocalAddress, LocalPort, OwningProcess |
+            Sort-Object LocalPort |
+            Format-Table -AutoSize
+
+      # ============================================================
+      # 10. FINAL STATUS
+      # ============================================================
+
+      - name: 10 - CRD status
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "        CRD RUNNER STATUS"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "GitHub Run: $env:GITHUB_RUN_ID"
+          Write-Host "CRD registration completed."
+          Write-Host ""
+          Write-Host "DO NOT close/cancel this workflow while"
+          Write-Host "you are using the temporary desktop."
+          Write-Host ""
+          Write-Host "=========================================="
+
+      # ============================================================
+      # 11. KEEP ALIVE
+      # ============================================================
+
+      - name: 11 - Keep runner alive
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host " Chrome Remote Desktop runner is ONLINE"
-          Write-Host " Runner: $env:GITHUB_RUN_ID"
+          Write-Host "KEEP-ALIVE STARTED"
           Write-Host "=========================================="
 
-          # Keep the GitHub runner alive.
-          # Stop the workflow manually when finished.
           while ($true) {
-            Write-Host "CRD session alive: $(Get-Date)"
-            Start-Sleep -Seconds 60
+
+              $now = Get-Date
+
+              Write-Host ""
+              Write-Host "[$now] CRD runner is alive."
+
+              $crdProcesses = Get-Process |
+                  Where-Object {
+                      $_.ProcessName -match "chromoting|remoting"
+                  }
+
+              if ($crdProcesses) {
+                  Write-Host "CRD processes detected:"
+                  $crdProcesses |
+                    Select-Object Id, ProcessName |
+                    Format-Table -AutoSize
+              }
+              else {
+                  Write-Warning "No CRD-related process detected."
+              }
+
+              Start-Sleep -Seconds 60
           }
