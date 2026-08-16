@@ -1,4 +1,5 @@
-name: Temporary CRD - DEBUG -2
+```yaml
+name: Temporary CRD - DEBUG
 
 on:
   workflow_dispatch:
@@ -21,20 +22,26 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. BASIC RUNNER TEST
+      # 1. CHECKOUT
       # ============================================================
 
-      - name: 01 - Test Windows runner
+      - name: 01 - Checkout
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. RUNNER DIAGNOSTICS
+      # ============================================================
+
+      - name: 02 - Runner diagnostics
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host "=========================================="
-          Write-Host "WINDOWS RUNNER TEST"
+          Write-Host "WINDOWS RUNNER"
           Write-Host "=========================================="
 
-          Write-Host "Computer:"
-          Write-Host $env:COMPUTERNAME
-
-          Write-Host ""
+          Write-Host "Computer: $env:COMPUTERNAME"
           Write-Host "User:"
           whoami
 
@@ -49,13 +56,13 @@ jobs:
             Format-List
 
           Write-Host ""
-          Write-Host "Runner test: SUCCESS"
+          Write-Host "Runner diagnostics: OK"
 
       # ============================================================
-      # 2. VALIDATE INPUTS
+      # 3. VALIDATE INPUTS
       # ============================================================
 
-      - name: 02 - Validate CRD inputs
+      - name: 03 - Validate CRD inputs
         shell: powershell
         env:
           CRD_AUTH_CODE: ${{ github.event.inputs.authcode }}
@@ -64,7 +71,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "CRD INPUT VALIDATION"
+          Write-Host "VALIDATING CRD INPUTS"
           Write-Host "=========================================="
 
           if ([string]::IsNullOrWhiteSpace($env:CRD_AUTH_CODE)) {
@@ -83,76 +90,79 @@ jobs:
           Write-Host "PIN: PRESENT"
           Write-Host "PIN format: VALID"
 
-          # NEVER print the actual auth code or PIN.
+          # Never print credentials.
 
       # ============================================================
-      # 3. DOWNLOAD CRD
+      # 4. CHECK LOCAL MSI
       # ============================================================
 
-      - name: 03 - Download Chrome Remote Desktop
+      - name: 04 - Verify local CRD installer
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
-          $installer = "$env:TEMP\chromeremotedesktophost.msi"
-
           Write-Host "=========================================="
-          Write-Host "DOWNLOADING CHROME REMOTE DESKTOP"
+          Write-Host "CHECKING LOCAL CRD INSTALLER"
           Write-Host "=========================================="
 
-          Write-Host "Downloading..."
+          $installer = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "chromeremotedesktophost.msi"
 
-          $start = Get-Date
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
-
-          $elapsed = (Get-Date) - $start
-
-          if (-not (Test-Path $installer)) {
-              throw "CRD installer was not downloaded."
+          if (-not (Test-Path -LiteralPath $installer)) {
+              throw "CRD MSI not found at: $installer"
           }
 
-          $file = Get-Item $installer
+          $file = Get-Item -LiteralPath $installer
+
+          Write-Host "Installer:"
+          Write-Host $file.FullName
 
           Write-Host ""
-          Write-Host "Download complete."
-          Write-Host "Time: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
-          Write-Host "Size: $($file.Length) bytes"
+          Write-Host "Size:"
+          Write-Host "$([math]::Round($file.Length / 1MB, 2)) MB"
 
-          if ($file.Length -lt 100000) {
-              throw "Downloaded installer is suspiciously small."
+          if ($file.Length -lt 1MB) {
+              throw "CRD MSI is suspiciously small."
           }
 
-          Write-Host "Download test: SUCCESS"
+          Write-Host ""
+          Write-Host "CRD MSI: FOUND"
+
+          "CRD_INSTALLER=$installer" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
 
       # ============================================================
-      # 4. INSTALL CRD
+      # 5. INSTALL CRD
       # ============================================================
 
-      - name: 04 - Install Chrome Remote Desktop
+      - name: 05 - Install Chrome Remote Desktop
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $installer = "$env:TEMP\chromeremotedesktophost.msi"
-          $log = "$env:TEMP\crd-install.log"
+          $log = Join-Path $env:TEMP "crd-install.log"
 
           Write-Host "=========================================="
-          Write-Host "INSTALLING CRD"
+          Write-Host "INSTALLING CHROME REMOTE DESKTOP"
           Write-Host "=========================================="
 
+          Write-Host "Installer:"
+          Write-Host $env:CRD_INSTALLER
+
+          Write-Host ""
           Write-Host "Starting MSI..."
 
           $start = Get-Date
 
-          $process = Start-Process `
+          $msi = Start-Process `
             -FilePath "msiexec.exe" `
             -ArgumentList @(
               "/i"
-              "`"$installer`""
+              "`"$env:CRD_INSTALLER`""
               "/qn"
               "/norestart"
               "/L*v"
@@ -166,28 +176,29 @@ jobs:
 
           Write-Host ""
           Write-Host "MSI finished."
-          Write-Host "Time: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
-          Write-Host "Exit code: $($process.ExitCode)"
+          Write-Host "Elapsed: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
+          Write-Host "Exit code: $($msi.ExitCode)"
 
-          if ($process.ExitCode -ne 0) {
+          if ($msi.ExitCode -ne 0) {
 
               Write-Host ""
-              Write-Host "========== MSI ERROR LOG =========="
+              Write-Host "========== MSI LOG =========="
 
               if (Test-Path $log) {
-                  Get-Content $log -Tail 150
+                  Get-Content $log -Tail 200
               }
 
-              throw "CRD installation failed."
+              throw "CRD MSI installation failed."
           }
 
+          Write-Host ""
           Write-Host "CRD installation: SUCCESS"
 
       # ============================================================
-      # 5. FIND CRD HOST EXECUTABLE
+      # 6. FIND HOST EXECUTABLE
       # ============================================================
 
-      - name: 05 - Find CRD host executable
+      - name: 06 - Find CRD host executable
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -201,56 +212,91 @@ jobs:
             "$env:ProgramFiles\Google\Chrome Remote Desktop"
           )
 
-          $hosts = @()
+          $crdHosts = @()
 
-          foreach ($path in $searchPaths) {
+          foreach ($searchPath in $searchPaths) {
 
               Write-Host ""
               Write-Host "Searching:"
-              Write-Host $path
+              Write-Host $searchPath
 
-              if (Test-Path $path) {
+              if (Test-Path -LiteralPath $searchPath) {
 
                   $found = Get-ChildItem `
-                    -Path $path `
+                    -LiteralPath $searchPath `
                     -Recurse `
                     -Filter "remoting_start_host.exe" `
+                    -File `
                     -ErrorAction SilentlyContinue
 
                   if ($found) {
-                      $hosts += $found
+                      $crdHosts += $found
                   }
               }
           }
 
-          if ($hosts.Count -eq 0) {
+          if ($crdHosts.Count -eq 0) {
               throw "remoting_start_host.exe was not found."
           }
 
           Write-Host ""
-          Write-Host "Found CRD host executable:"
+          Write-Host "Found CRD host executable(s):"
 
-          foreach ($host in $hosts) {
-              Write-Host $host.FullName
+          foreach ($crdHost in $crdHosts) {
+              Write-Host $crdHost.FullName
           }
 
-          $hostPath = $hosts[0].FullName
+          $selectedCrdHost = $crdHosts[0].FullName
 
-          "CRD_HOST_EXE=$hostPath" |
+          Write-Host ""
+          Write-Host "Selected:"
+          Write-Host $selectedCrdHost
+
+          "CRD_HOST_EXE=$selectedCrdHost" |
             Out-File `
               -FilePath $env:GITHUB_ENV `
               -Append `
               -Encoding utf8
 
+      # ============================================================
+      # 7. SHOW CRD VERSION
+      # ============================================================
+
+      - name: 07 - CRD host diagnostics
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host "CRD HOST DIAGNOSTICS"
+          Write-Host "=========================================="
+
+          if (-not (Test-Path -LiteralPath $env:CRD_HOST_EXE)) {
+              throw "CRD host executable does not exist."
+          }
+
+          $file = Get-Item -LiteralPath $env:CRD_HOST_EXE
+
+          Write-Host "Path:"
+          Write-Host $file.FullName
+
           Write-Host ""
-          Write-Host "Selected:"
-          Write-Host $hostPath
+          Write-Host "File size:"
+          Write-Host "$([math]::Round($file.Length / 1MB, 2)) MB"
+
+          Write-Host ""
+          Write-Host "File version:"
+          Write-Host $file.VersionInfo.FileVersion
+
+          Write-Host ""
+          Write-Host "Product version:"
+          Write-Host $file.VersionInfo.ProductVersion
 
       # ============================================================
-      # 6. REGISTER CRD
+      # 8. REGISTER CRD HOST
       # ============================================================
 
-      - name: 06 - Register Chrome Remote Desktop
+      - name: 08 - Register CRD host
         shell: powershell
         env:
           CRD_AUTH_CODE: ${{ github.event.inputs.authcode }}
@@ -259,18 +305,18 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "REGISTERING CHROME REMOTE DESKTOP"
+          Write-Host "CRD HOST REGISTRATION"
           Write-Host "=========================================="
 
-          if (-not (Test-Path $env:CRD_HOST_EXE)) {
-              throw "CRD host executable does not exist."
+          if (-not (Test-Path -LiteralPath $env:CRD_HOST_EXE)) {
+              throw "CRD host executable not found."
           }
 
           Write-Host "Executable:"
           Write-Host $env:CRD_HOST_EXE
 
           Write-Host ""
-          Write-Host "Computer:"
+          Write-Host "Computer name:"
           Write-Host $env:COMPUTERNAME
 
           Write-Host ""
@@ -278,99 +324,127 @@ jobs:
           Write-Host "PIN: PRESENT"
 
           Write-Host ""
-          Write-Host "Starting registration..."
+          Write-Host "Starting CRD registration..."
 
-          $arguments = @(
+          $crdArguments = @(
             "--code=$env:CRD_AUTH_CODE"
             "--redirect-url=https://remotedesktop.google.com/_/oauthredirect"
             "--name=$env:COMPUTERNAME"
             "--pin=$env:CRD_PIN"
           )
 
-          $process = Start-Process `
+          $start = Get-Date
+
+          $registration = Start-Process `
             -FilePath $env:CRD_HOST_EXE `
-            -ArgumentList $arguments `
+            -ArgumentList $crdArguments `
             -Wait `
             -PassThru `
             -NoNewWindow
 
-          Write-Host ""
-          Write-Host "Registration process finished."
-          Write-Host "Exit code: $($process.ExitCode)"
+          $elapsed = (Get-Date) - $start
 
-          if ($process.ExitCode -ne 0) {
-              throw "CRD registration failed with exit code $($process.ExitCode)."
+          Write-Host ""
+          Write-Host "CRD registration process finished."
+          Write-Host "Elapsed: $([math]::Round($elapsed.TotalSeconds, 2)) seconds"
+          Write-Host "Exit code: $($registration.ExitCode)"
+
+          if ($registration.ExitCode -ne 0) {
+              throw "CRD registration failed with exit code $($registration.ExitCode)."
           }
 
           Write-Host ""
           Write-Host "CRD registration: SUCCESS"
 
       # ============================================================
-      # 7. VERIFY
+      # 9. VERIFY SERVICE
       # ============================================================
 
-      - name: 07 - Verify CRD
+      - name: 09 - Verify CRD service
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host "CRD VERIFICATION"
+          Write-Host "CRD SERVICE VERIFICATION"
           Write-Host "=========================================="
+
+          Write-Host ""
+          Write-Host "Chrome Remote Desktop services:"
+
+          $services = Get-Service |
+            Where-Object {
+              $_.Name -match "chromoting|remoting" -or
+              $_.DisplayName -match "Chrome Remote Desktop"
+            }
+
+          if ($services) {
+              $services |
+                Select-Object Name, Status, StartType, DisplayName |
+                Format-Table -AutoSize
+          }
+          else {
+              Write-Warning "No Chrome Remote Desktop service was found."
+          }
 
           Write-Host ""
           Write-Host "CRD processes:"
 
-          Get-Process |
+          $processes = Get-Process |
             Where-Object {
               $_.ProcessName -match "chromoting|remoting"
-            } |
-            Select-Object Id, ProcessName |
-            Format-Table -AutoSize
+            }
 
-          Write-Host ""
-          Write-Host "CRD services:"
-
-          Get-Service |
-            Where-Object {
-              $_.Name -match "chromoting|remoting" -or
-              $_.DisplayName -match "Chrome Remote Desktop"
-            } |
-            Select-Object Name, Status, StartType, DisplayName |
-            Format-Table -AutoSize
+          if ($processes) {
+              $processes |
+                Select-Object Id, ProcessName |
+                Format-Table -AutoSize
+          }
+          else {
+              Write-Warning "No CRD-related process was found."
+          }
 
       # ============================================================
-      # 8. KEEP ALIVE
+      # 10. FINAL STATUS
       # ============================================================
 
-      - name: 08 - Keep runner alive
+      - name: 10 - Ready
         shell: powershell
         run: |
+          Write-Host ""
           Write-Host "=========================================="
-          Write-Host "CRD SHOULD NOW BE ONLINE"
+          Write-Host "       TEMPORARY CRD RUNNER READY"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "GitHub Run: $env:GITHUB_RUN_ID"
+          Write-Host ""
+          Write-Host "The runner will remain alive until"
+          Write-Host "the workflow is cancelled or times out."
+          Write-Host ""
           Write-Host "=========================================="
 
-          Write-Host ""
-          Write-Host "Computer name: $env:COMPUTERNAME"
-          Write-Host "GitHub Run ID: $env:GITHUB_RUN_ID"
+      # ============================================================
+      # 11. KEEP ALIVE
+      # ============================================================
 
-          Write-Host ""
+      - name: 11 - Keep alive
+        shell: powershell
+        run: |
           Write-Host "Keep-alive started."
 
           while ($true) {
 
-              Write-Host ""
-              Write-Host "[$(Get-Date)] Runner alive."
-
-              $crd = Get-Process |
+              $crdProcesses = Get-Process |
                 Where-Object {
                   $_.ProcessName -match "chromoting|remoting"
                 }
 
-              if ($crd) {
-                  Write-Host "CRD process detected."
+              if ($crdProcesses) {
+                  Write-Host "[$(Get-Date)] CRD process detected."
               }
               else {
-                  Write-Warning "No CRD process detected."
+                  Write-Warning "[$(Get-Date)] No CRD process detected."
               }
 
               Start-Sleep -Seconds 60
           }
+```
