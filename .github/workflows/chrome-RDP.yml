@@ -1,5 +1,4 @@
-```yaml
-name: Temporary CRD - DEBUG
+name: Temporary CRD - DEBUG - 3
 
 on:
   workflow_dispatch:
@@ -447,4 +446,3 @@ jobs:
 
               Start-Sleep -Seconds 60
           }
-```
