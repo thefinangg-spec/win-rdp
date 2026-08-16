@@ -1,24 +1,105 @@
-name: Chrome Remote Desktop
+name:  WINDOES Chrome Remote Desktop
 
-on: 
+on:
   workflow_dispatch:
     inputs:
       authcode:
-        description: 'Enter CRD code'
+        description: "Chrome Remote Desktop authorization code"
         required: true
+        type: string
       pincode:
-        description: 'Six digit Pin'
+        description: "6-digit CRD PIN"
         required: true
-  
+        type: string
+
 jobs:
-  build:
-    runs-on: Windows-latest
+  remote-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 360
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Initializing Setup
-      run: ./setup.ps1
-    - name: Starting CRD
-      run: ${{ github.event.inputs.authcode }} -pin=${{ github.event.inputs.pincode }}
-    - name: Keep Alive
-      run: ./timeout.ps1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Chrome Remote Desktop
+        shell: powershell
+        run: |
+          $url = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+          $installer = "$env:TEMP\chromeremotedesktophost.msi"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i `"$installer`" /qn /norestart" `
+            -Wait `
+            -NoNewWindow
+
+      - name: Configure Chrome Remote Desktop
+        shell: powershell
+        env:
+          CRD_AUTH_CODE: ${{ github.event.inputs.authcode }}
+          CRD_PIN: ${{ github.event.inputs.pincode }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Find the CRD host executable installed by the MSI
+          $host = Get-ChildItem `
+            "C:\Program Files (x86)\Google\Chrome Remote Desktop" `
+            -Recurse `
+            -Filter "remoting_start_host.exe" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $host) {
+            $host = Get-ChildItem `
+              "C:\Program Files\Google\Chrome Remote Desktop" `
+              -Recurse `
+              -Filter "remoting_start_host.exe" `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          if (-not $host) {
+            throw "Chrome Remote Desktop host executable was not found."
+          }
+
+          Write-Host "CRD host found: $($host.FullName)"
+
+          # Register this temporary runner as a CRD host.
+          & $host.FullName `
+            --code="$env:CRD_AUTH_CODE" `
+            --redirect-url="https://remotedesktop.google.com/_/oauthredirect" `
+            --name="GitHub-Actions-$env:GITHUB_RUN_ID" `
+            --pin="$env:CRD_PIN"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Chrome Remote Desktop registration failed."
+          }
+
+      - name: Verify CRD service
+        shell: powershell
+        run: |
+          Get-Service |
+            Where-Object {
+              $_.Name -match "chromoting" -or
+              $_.DisplayName -match "Chrome Remote Desktop"
+            } |
+            Format-Table Name, Status, DisplayName
+
+      - name: Keep runner alive
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host " Chrome Remote Desktop runner is ONLINE"
+          Write-Host " Runner: $env:GITHUB_RUN_ID"
+          Write-Host "=========================================="
+
+          # Keep the GitHub runner alive.
+          # Stop the workflow manually when finished.
+          while ($true) {
+            Write-Host "CRD session alive: $(Get-Date)"
+            Start-Sleep -Seconds 60
+          }
